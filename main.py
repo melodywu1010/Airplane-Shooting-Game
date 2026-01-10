@@ -1,6 +1,57 @@
 import pygame
 import random
 import sys
+import os
+
+# ======================
+# 0) 字型：解決中文亂碼（最重要）
+# ======================
+def load_font(size: int) -> pygame.font.Font:
+    """
+    優先載入專案內字型 assets/NotoSansTC-Regular.otf（推薦做法，最穩）
+    若沒有字型檔，則嘗試系統中文字型（Windows/macOS/Linux）
+    最後才退回 pygame 預設字型（可能會中文亂碼）
+    """
+    # 1) 專案內字型（最推薦）
+    local_candidates = [
+        os.path.join("assets", "NotoSansTC-Regular.otf"),
+        os.path.join("assets", "NotoSansTC-Regular.ttf"),
+        os.path.join("assets", "NotoSansCJKtc-Regular.otf"),
+        os.path.join("assets", "msjh.ttc"),  # 你若自行放微軟正黑體也可
+    ]
+    for p in local_candidates:
+        if os.path.exists(p):
+            try:
+                return pygame.font.Font(p, size)
+            except Exception:
+                pass
+
+    # 2) 系統字型名稱（依常見程度排序）
+    # Windows: Microsoft JhengHei / 微軟正黑體
+    # macOS: PingFang TC / Heiti TC
+    # Linux: Noto Sans CJK TC
+    sys_candidates = [
+        "Microsoft JhengHei",
+        "Microsoft JhengHei UI",
+        "微軟正黑體",
+        "PingFang TC",
+        "Heiti TC",
+        "SimHei",
+        "WenQuanYi Zen Hei",
+        "Noto Sans CJK TC",
+        "Noto Sans TC",
+        "Arial Unicode MS",
+    ]
+    for name in sys_candidates:
+        path = pygame.font.match_font(name)
+        if path:
+            try:
+                return pygame.font.Font(path, size)
+            except Exception:
+                pass
+
+    # 3) 最後 fallback（可能中文仍亂碼）
+    return pygame.font.Font(None, size)
 
 # ======================
 # 1) 初始化
@@ -8,7 +59,7 @@ import sys
 pygame.init()
 WIDTH, HEIGHT = 480, 600
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Jet Shooter - 5 Levels + Timer + PowerUps (Boss Drops 15%)")
+pygame.display.set_caption("天際防衛戰")
 clock = pygame.time.Clock()
 
 # Colors
@@ -25,21 +76,21 @@ ORANGE = (255, 170, 0)
 GREEN = (0, 210, 120)
 BLUE = (80, 160, 255)
 
-font = pygame.font.SysFont("arial", 24)
-small_font = pygame.font.SysFont("arial", 18)
-big_font = pygame.font.SysFont("arial", 44)
+# Fonts (use Chinese-safe loader)
+font = load_font(24)
+small_font = load_font(18)
+big_font = load_font(44)
+title_font = load_font(52)
 
 # ======================
-# 2) 關卡設定（五關）
+# 2) 關卡 / 道具 / Boss 參數
 # ======================
-# 一般關用分數過關；第3與第5為 Boss 關（打倒 Boss 過關）
 LEVEL_SCORE_TARGETS = {
     1: 200,
     2: 450,
     4: 900,
 }
 
-# 每關限時（秒）
 LEVEL_TIME_LIMIT = {
     1: 45,
     2: 50,
@@ -48,19 +99,18 @@ LEVEL_TIME_LIMIT = {
     5: 70,
 }
 
-# 一般怪物參數（每關）
 ENEMY_SETTINGS = {
     1: {"count": 5, "speed_min": 1, "speed_max": 3},
     2: {"count": 6, "speed_min": 2, "speed_max": 4},
     4: {"count": 7, "speed_min": 2, "speed_max": 5},
 }
 
-# Boss 設定（第3關降難度）
-MID_BOSS_HP = 140   # 原 180 -> 140
+# Boss 設定（第3關：稍微變難一點點）
+MID_BOSS_HP = 150   # 原 140 -> 150
 BIG_BOSS_HP = 320
 
-# 技能果實（基本版）
-POWERUP_DROP_CHANCE = 0.18  # 一般怪物死亡後掉落機率
+# 技能果實
+POWERUP_DROP_CHANCE = 0.18
 POWERUP_TYPES = ["heal", "rapid", "spread"]
 RAPID_DURATION_MS = 6000
 SPREAD_DURATION_MS = 6000
@@ -68,8 +118,8 @@ SPREAD_DURATION_MS = 6000
 # Boss 掉落：每 15% 血量掉一顆（85/70/55/40/25/10）
 BOSS_DROP_THRESHOLDS = [0.85, 0.70, 0.55, 0.40, 0.25, 0.10]
 
-# Boss 子彈傷害（第3關降低）
-BOSS_BULLET_DAMAGE_MID = 7    # 原 10 -> 7
+# Boss 子彈傷害（第3關稍微變難）
+BOSS_BULLET_DAMAGE_MID = 8   # 原 7 -> 8
 BOSS_BULLET_DAMAGE_BIG = 10
 
 # ======================
@@ -187,16 +237,21 @@ class Player(pygame.sprite.Sprite):
         self.hp = 100
         self.hp_max = 100
 
-        # Auto fire base
         self.last_shot = 0
         self.base_shoot_delay = 120
         self.shoot_delay = self.base_shoot_delay
 
-        # Flame animation
         self.last_flame_toggle = 0
         self.flame_on = True
 
-        # PowerUp timed effects
+        self.rapid_until = 0
+        self.spread_until = 0
+
+    def reset_for_new_game(self):
+        self.rect.center = (WIDTH//2, HEIGHT-60)
+        self.hp = self.hp_max
+        self.last_shot = 0
+        self.shoot_delay = self.base_shoot_delay
         self.rapid_until = 0
         self.spread_until = 0
 
@@ -217,12 +272,10 @@ class Player(pygame.sprite.Sprite):
 
         now = pygame.time.get_ticks()
 
-        # flame toggle
         if now - self.last_flame_toggle >= 80:
             self.last_flame_toggle = now
             self.flame_on = not self.flame_on
 
-        # rapid effect
         if now <= self.rapid_until:
             self.shoot_delay = max(50, self.base_shoot_delay // 2)
         else:
@@ -304,10 +357,9 @@ class Boss(pygame.sprite.Sprite):
         self.vx = 3 if boss_kind == "mid" else 4
 
         self.last_shot = 0
-        # 第3關降難度：中Boss射擊間隔變慢
-        self.shot_delay = 1000 if boss_kind == "mid" else 650
+        # 第3關稍微變難：射擊間隔略快
+        self.shot_delay = 950 if boss_kind == "mid" else 650  # 原 mid 1000 -> 950
 
-        # Boss 掉落狀態：每個門檻只掉一次
         self.drop_flags = {thr: False for thr in BOSS_DROP_THRESHOLDS}
 
     def update(self, *args):
@@ -339,7 +391,7 @@ class BossBullet(pygame.sprite.Sprite):
             self.kill()
 
 # ======================
-# 5) 遊戲流程：關卡初始化/切換
+# 5) 群組與狀態
 # ======================
 all_sprites = pygame.sprite.Group()
 enemies = pygame.sprite.Group()
@@ -351,15 +403,25 @@ boss_bullets = pygame.sprite.Group()
 player = Player()
 all_sprites.add(player)
 
+# 狀態：MENU -> COUNTDOWN -> PLAY -> CLEAR -> WIN / GAMEOVER
+state = "MENU"
+
 score = 0
 level = 1
-mode = "LEVEL"  # LEVEL / BOSS / CLEAR / GAMEOVER / WIN
+mode = "LEVEL"
 level_start_ms = pygame.time.get_ticks()
 level_time_limit = LEVEL_TIME_LIMIT[level]
 
 message_until = 0
 message_text = ""
 
+# 倒數
+countdown_start_ms = 0
+COUNTDOWN_SECONDS = 3
+
+# ======================
+# 6) 遊戲流程函式
+# ======================
 def clear_groups_for_new_level():
     for g in (enemies, bullets, powerups, boss_group, boss_bullets):
         for s in list(g):
@@ -401,13 +463,11 @@ def remaining_time_sec() -> int:
     return max(0, level_time_limit - elapsed)
 
 def maybe_drop_powerup(x: int, y: int, force: bool = False):
-    """掉落技能果實。force=True 用於 Boss 固定掉落。"""
     if not force:
         if random.random() > POWERUP_DROP_CHANCE:
             return
         kind = random.choice(POWERUP_TYPES)
     else:
-        # Boss 固定掉落：偏向 heal，降低Boss戰挫折感
         kind = random.choices(["heal", "rapid", "spread"], weights=[45, 30, 25], k=1)[0]
 
     p = PowerUp(kind, x, y)
@@ -424,7 +484,6 @@ def apply_powerup(kind: str):
         player.spread_until = max(player.spread_until, now + SPREAD_DURATION_MS)
 
 def spawn_player_bullets():
-    """自動射擊：一般=單發；Spread=三連發"""
     if not player.can_fire():
         return
     player.mark_fired()
@@ -443,7 +502,6 @@ def spawn_player_bullets():
         bullets.add(b)
 
 def boss_check_and_drop(boss: Boss):
-    """Boss 血量到達門檻時固定掉落果實（每 15% 一顆）。"""
     if boss.max_hp <= 0:
         return
     ratio = boss.hp / boss.max_hp
@@ -453,165 +511,268 @@ def boss_check_and_drop(boss: Boss):
             maybe_drop_powerup(boss.rect.centerx, boss.rect.centery, force=True)
 
 def set_gameover():
-    global mode
+    global state
     player.hp = 0
-    mode = "GAMEOVER"
+    state = "GAMEOVER"
 
-# 開始第一關
-start_level(1)
+def new_game():
+    global score, level, message_text, message_until
+    score = 0
+    level = 1
+    player.reset_for_new_game()
+    clear_groups_for_new_level()
+    message_text = ""
+    message_until = 0
 
 # ======================
-# 6) 主迴圈
+# 7) UI：按鈕
+# ======================
+start_button = pygame.Rect(WIDTH//2 - 110, HEIGHT - 150, 220, 54)
+back_button = pygame.Rect(WIDTH//2 - 110, HEIGHT//2 + 40, 220, 54)  # GameOver/Win 回封面
+
+def draw_button(rect: pygame.Rect, text: str, hover: bool):
+    color = (60, 180, 120) if hover else (40, 140, 100)
+    pygame.draw.rect(screen, color, rect, border_radius=12)
+    pygame.draw.rect(screen, (220, 220, 220), rect, 2, border_radius=12)
+    t = font.render(text, True, WHITE)
+    screen.blit(t, (rect.centerx - t.get_width()//2, rect.centery - t.get_height()//2))
+
+def draw_rules_block(x: int, y: int):
+    rules = [
+        "規則簡介：",
+        "1) 移動：WASD 或 方向鍵",
+        "2) 射擊：自動射擊（無需按鍵）",
+        "3) 一般關(1/2/4)：打怪 +10 分，達標過關",
+        "4) Boss 關(3/5)：擊倒 Boss 才能過關",
+        "5) 每關限時，時間到或 HP=0 即失敗",
+        "6) 果實：Heal(+25) / Rapid(6s) / Spread(6s)",
+        "7) Boss 每損失 15% 血量固定掉果實",
+        "   (85/70/55/40/25/10%)",
+    ]
+    cy = y
+    for s in rules:
+        t = small_font.render(s, True, GRAY)
+        screen.blit(t, (x, cy))
+        cy += t.get_height() + 4
+
+# ======================
+# 8) 主迴圈
 # ======================
 running = True
 while running:
     clock.tick(60)
 
+    mouse_pos = pygame.mouse.get_pos()
+    mouse_down = False
+
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
         elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            # 任何畫面 ESC 離開
             running = False
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            mouse_down = True
 
     keys = pygame.key.get_pressed()
 
-    # timer check
-    if mode in ("LEVEL", "BOSS") and remaining_time_sec() <= 0:
-        mode = "GAMEOVER"
+    # ======================
+    # MENU（封面/規則/開始）
+    # ======================
+    if state == "MENU":
+        screen.fill(DARK_BG)
 
-    # auto fire（GameOver/Win 不射）
-    if mode in ("LEVEL", "BOSS"):
-        spawn_player_bullets()
+        title = title_font.render("天際防衛戰", True, CYAN)
+        screen.blit(title, (WIDTH//2 - title.get_width()//2, 70))
 
-    # update（GameOver/Win 仍可更新做畫面穩定，但不影響玩法）
-    all_sprites.update(keys)
+        demo = make_fighter_surface(80, 64)
+        demo2 = demo.copy()
+        draw_engine_flame(demo2, 80, 64, strong=True)
+        screen.blit(demo2, (WIDTH//2 - demo2.get_width()//2, 140))
 
-    # collisions
-    if mode == "LEVEL":
-        hit_map = pygame.sprite.groupcollide(enemies, bullets, True, True)
-        for enemy in hit_map:
-            score += 10
-            # 一般關卡（1/2/4）怪物死亡可能掉落
-            if level in (1, 2, 4):
-                maybe_drop_powerup(enemy.rect.centerx, enemy.rect.centery, force=False)
+        draw_rules_block(40, 230)
 
-            # respawn
-            st = ENEMY_SETTINGS[level]
-            e = Enemy(st["speed_min"], st["speed_max"])
-            all_sprites.add(e)
-            enemies.add(e)
+        hover = start_button.collidepoint(mouse_pos)
+        draw_button(start_button, "開始遊戲", hover)
 
-        # enemy hit player
-        hits = pygame.sprite.spritecollide(player, enemies, True)
-        for _ in hits:
-            player.hp -= 20
-            if player.hp <= 0:
-                set_gameover()
-                break
-            else:
+        tip = small_font.render("點擊開始後，倒數 3 秒進入遊戲", True, GRAY)
+        screen.blit(tip, (WIDTH//2 - tip.get_width()//2, HEIGHT - 70))
+
+        pygame.display.flip()
+
+        if mouse_down and start_button.collidepoint(mouse_pos):
+            new_game()
+            state = "COUNTDOWN"
+            countdown_start_ms = pygame.time.get_ticks()
+            # 倒數時不啟動關卡計時，等倒數完才 start_level(1)
+
+        continue
+
+    # ======================
+    # COUNTDOWN（倒數 3 秒）
+    # ======================
+    if state == "COUNTDOWN":
+        all_sprites.update(keys)
+
+        screen.fill(DARK_BG)
+        all_sprites.draw(screen)
+
+        elapsed = (pygame.time.get_ticks() - countdown_start_ms) // 1000
+        left = COUNTDOWN_SECONDS - elapsed
+
+        hud1 = font.render(f"Score: {score}  HP: {max(0, player.hp)}", True, WHITE)
+        screen.blit(hud1, (10, 10))
+
+        if left <= 0:
+            start_level(1)
+            state = "PLAY"
+        else:
+            txt = title_font.render(str(left), True, YELLOW)
+            screen.blit(txt, (WIDTH//2 - txt.get_width()//2, HEIGHT//2 - 60))
+            sub = small_font.render("準備開始…", True, GRAY)
+            screen.blit(sub, (WIDTH//2 - sub.get_width()//2, HEIGHT//2 + 10))
+
+        pygame.display.flip()
+        continue
+
+    # ======================
+    # PLAY（正式遊戲）
+    # ======================
+    if state == "PLAY":
+        if mode in ("LEVEL", "BOSS") and remaining_time_sec() <= 0:
+            state = "GAMEOVER"
+
+        if mode in ("LEVEL", "BOSS"):
+            spawn_player_bullets()
+
+        all_sprites.update(keys)
+
+        if mode == "LEVEL":
+            hit_map = pygame.sprite.groupcollide(enemies, bullets, True, True)
+            for enemy in hit_map:
+                score += 10
+                if level in (1, 2, 4):
+                    maybe_drop_powerup(enemy.rect.centerx, enemy.rect.centery, force=False)
                 st = ENEMY_SETTINGS[level]
                 e = Enemy(st["speed_min"], st["speed_max"])
                 all_sprites.add(e)
                 enemies.add(e)
 
-        # eat powerups
-        got = pygame.sprite.spritecollide(player, powerups, True)
-        for p in got:
-            apply_powerup(p.kind)
+            hits = pygame.sprite.spritecollide(player, enemies, True)
+            for _ in hits:
+                player.hp -= 20
+                if player.hp <= 0:
+                    set_gameover()
+                    break
+                st = ENEMY_SETTINGS[level]
+                e = Enemy(st["speed_min"], st["speed_max"])
+                all_sprites.add(e)
+                enemies.add(e)
 
-        # clear by score
-        target = LEVEL_SCORE_TARGETS.get(level, None)
-        if target is not None and score >= target:
-            mode = "CLEAR"
-            message_text = f"LEVEL {level} CLEAR!"
-            message_until = pygame.time.get_ticks() + 1200
+            got = pygame.sprite.spritecollide(player, powerups, True)
+            for p in got:
+                apply_powerup(p.kind)
 
-    elif mode == "BOSS":
-        # boss shoot
-        for boss in boss_group:
-            if boss.can_shoot():
-                boss.mark_shot()
-                x = boss.rect.centerx
-                y = boss.rect.bottom - 8
-                vxs = (-2, 0, 2) if boss.boss_kind == "mid" else (-3, -1, 0, 1, 3)
-                for vx in vxs:
-                    bb = BossBullet(x, y, vx=vx, vy=7)
-                    all_sprites.add(bb)
-                    boss_bullets.add(bb)
+            target = LEVEL_SCORE_TARGETS.get(level, None)
+            if target is not None and score >= target:
+                state = "CLEAR"
+                message_text = f"LEVEL {level} CLEAR!"
+                message_until = pygame.time.get_ticks() + 1200
 
-        # player bullets hit boss
-        if len(boss_group) > 0:
-            boss = next(iter(boss_group))
-            boss_hits = pygame.sprite.spritecollide(boss, bullets, True)
-            if boss_hits:
-                boss.hp -= 2 * len(boss_hits)
+        elif mode == "BOSS":
+            for boss in boss_group:
+                if boss.can_shoot():
+                    boss.mark_shot()
+                    x = boss.rect.centerx
+                    y = boss.rect.bottom - 8
+                    vxs = (-2, 0, 2) if boss.boss_kind == "mid" else (-3, -1, 0, 1, 3)
+                    for vx in vxs:
+                        bb = BossBullet(x, y, vx=vx, vy=7)
+                        all_sprites.add(bb)
+                        boss_bullets.add(bb)
 
-                # Boss 掉落檢查（在扣血後檢查門檻）
-                boss_check_and_drop(boss)
+            if len(boss_group) > 0:
+                boss = next(iter(boss_group))
+                boss_hits = pygame.sprite.spritecollide(boss, bullets, True)
+                if boss_hits:
+                    boss.hp -= 2 * len(boss_hits)
+                    boss_check_and_drop(boss)
+                    if boss.hp <= 0:
+                        boss.kill()
+                        state = "CLEAR"
+                        message_text = f"BOSS DEFEATED! (L{level})"
+                        message_until = pygame.time.get_ticks() + 1400
 
-                if boss.hp <= 0:
-                    boss.kill()
-                    mode = "CLEAR"
-                    message_text = f"BOSS DEFEATED! (L{level})"
-                    message_until = pygame.time.get_ticks() + 1400
+            bb_hits = pygame.sprite.spritecollide(player, boss_bullets, True)
+            for _ in bb_hits:
+                if level == 3:
+                    player.hp -= BOSS_BULLET_DAMAGE_MID
+                else:
+                    player.hp -= BOSS_BULLET_DAMAGE_BIG
+                if player.hp <= 0:
+                    set_gameover()
+                    break
 
-        # boss bullets hit player
-        bb_hits = pygame.sprite.spritecollide(player, boss_bullets, True)
-        for _ in bb_hits:
-            if level == 3:
-                player.hp -= BOSS_BULLET_DAMAGE_MID
-            else:
-                player.hp -= BOSS_BULLET_DAMAGE_BIG
+            got = pygame.sprite.spritecollide(player, powerups, True)
+            for p in got:
+                apply_powerup(p.kind)
 
-            if player.hp <= 0:
-                set_gameover()
-                break
-
-        # eat powerups
-        got = pygame.sprite.spritecollide(player, powerups, True)
-        for p in got:
-            apply_powerup(p.kind)
-
-    # clear -> next level
-    if mode == "CLEAR":
+    # ======================
+    # CLEAR（過關提示）
+    # ======================
+    if state == "CLEAR":
         if pygame.time.get_ticks() >= message_until:
             if level < 5:
                 start_level(level + 1)
+                state = "PLAY"
             else:
-                mode = "WIN"
+                state = "WIN"
                 message_text = "YOU WIN!"
                 message_until = pygame.time.get_ticks() + 2500
 
-    # draw
+    # ======================
+    # 繪製（PLAY / CLEAR / WIN / GAMEOVER）
+    # ======================
     screen.fill(DARK_BG)
     all_sprites.draw(screen)
 
-    # ============= HUD（只留指定內容） =============
+    # HUD
     hud1 = font.render(f"Score: {score}  HP: {max(0, player.hp)}", True, WHITE)
     screen.blit(hud1, (10, 10))
 
-    # GAMEOVER 時不顯示 Time（只顯示 Score/HP）
-    if mode != "GAMEOVER":
+    if state not in ("GAMEOVER", "WIN"):
         time_left = remaining_time_sec()
         hud2 = small_font.render(f"LEVEL: {level}  Time: {time_left}s", True, GRAY)
         screen.blit(hud2, (10, 38))
-    # ===============================================
 
-    # messages
     now = pygame.time.get_ticks()
-    if mode in ("CLEAR", "WIN") and now < message_until:
+
+    if state in ("CLEAR", "WIN") and now < message_until:
         msg = big_font.render(message_text, True, YELLOW)
         screen.blit(msg, (WIDTH//2 - msg.get_width()//2, HEIGHT//2 - 40))
 
-    if mode == "GAMEOVER":
+    # GameOver/Win：回到封面按鈕
+    if state == "GAMEOVER":
         msg = big_font.render("GAME OVER", True, RED)
         screen.blit(msg, (WIDTH//2 - msg.get_width()//2, HEIGHT//2 - 40))
 
-    pygame.display.flip()
+        hover = back_button.collidepoint(mouse_pos)
+        draw_button(back_button, "回到封面", hover)
 
-    # end after WIN display
-    if mode == "WIN" and pygame.time.get_ticks() >= message_until:
-        running = False
+        if mouse_down and back_button.collidepoint(mouse_pos):
+            state = "MENU"
+
+    if state == "WIN":
+        msg = big_font.render("YOU WIN!", True, YELLOW)
+        screen.blit(msg, (WIDTH//2 - msg.get_width()//2, HEIGHT//2 - 40))
+
+        hover = back_button.collidepoint(mouse_pos)
+        draw_button(back_button, "回到封面", hover)
+
+        if mouse_down and back_button.collidepoint(mouse_pos):
+            state = "MENU"
+
+    pygame.display.flip()
 
 pygame.quit()
 sys.exit()
