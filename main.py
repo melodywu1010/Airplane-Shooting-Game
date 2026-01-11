@@ -7,7 +7,6 @@ import os
 # 0) 字型：避免中文亂碼
 # =========================================================
 def load_font(size: int) -> pygame.font.Font:
-    # (A) 專案內字型（最推薦）
     local_candidates = [
         os.path.join("assets", "NotoSansTC-Regular.otf"),
         os.path.join("assets", "NotoSansTC-Regular.ttf"),
@@ -21,7 +20,6 @@ def load_font(size: int) -> pygame.font.Font:
             except Exception:
                 pass
 
-    # (B) 系統字型
     sys_candidates = [
         "Microsoft JhengHei",
         "Microsoft JhengHei UI",
@@ -54,7 +52,6 @@ screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("天際防衛戰")
 clock = pygame.time.Clock()
 
-# Colors
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 GRAY = (180, 180, 180)
@@ -73,7 +70,7 @@ title_font = load_font(52)
 
 
 # =========================================================
-# 2) 參數：五關卡 / Boss / 道具
+# 2) 參數：五關卡 / Boss / 道具 / Boss 模式
 # =========================================================
 LEVEL_SCORE_TARGETS = {1: 200, 2: 450, 4: 900}
 LEVEL_TIME_LIMIT = {1: 45, 2: 50, 3: 60, 4: 55, 5: 70}
@@ -84,21 +81,33 @@ ENEMY_SETTINGS = {
     4: {"count": 7, "speed_min": 2, "speed_max": 5},
 }
 
-# Boss：第3關(中Boss) / 第5關(大Boss)
 MID_BOSS_HP = 150
-BIG_BOSS_HP = 320
-MID_BOSS_SHOT_DELAY = 950
-BIG_BOSS_SHOT_DELAY = 650
+BIG_BOSS_HP = 250
 BOSS_BULLET_DAMAGE_MID = 8
-BOSS_BULLET_DAMAGE_BIG = 10
+BOSS_BULLET_DAMAGE_BIG = 8
 
 POWERUP_DROP_CHANCE = 0.18
-POWERUP_TYPES = ["heal", "rapid", "spread"]
 RAPID_DURATION_MS = 6000
 SPREAD_DURATION_MS = 6000
 
 # Boss 固定掉落：每損失 15% 一顆（共 6 顆）
 BOSS_DROP_THRESHOLDS = [0.85, 0.70, 0.55, 0.40, 0.25, 0.10]
+
+# Boss 攻擊模式切換
+BOSS_MODE_SWITCH_MIN_MS = 2200
+BOSS_MODE_SWITCH_MAX_MS = 3800
+
+MID_MODE_DELAY = {
+    "spray": 950,   # 三向
+    "burst": 240,   # 短時間連射
+    "snipe": 520,   # 高速直線
+}
+
+BIG_MODE_DELAY = {
+    "fan": 650,     # 五向扇形
+    "ring": 900,    # 多向彈幕感
+    "burst": 260,   # 短時間密集
+}
 
 
 # =========================================================
@@ -215,13 +224,10 @@ def wrap_text(text: str, fnt: pygame.font.Font, max_width: int):
         lines.append(cur)
     return lines
 
-# ---- Boss 關背景（更暗 + 暗角 + 掃描線 + 色調）----
 def draw_boss_background(menu_particles):
-    # 更暗的同色系漸層
     draw_vertical_gradient(screen, (4, 6, 14), (10, 12, 26))
     update_and_draw_particles(menu_particles)
 
-    # 暗角（vignette）—— 注意：vignette 在這裡一定會被定義，不會 NameError
     w, h = screen.get_size()
     vignette = pygame.Surface((w, h), pygame.SRCALPHA)
     for i in range(18):
@@ -235,7 +241,6 @@ def draw_boss_background(menu_particles):
         )
     screen.blit(vignette, (0, 0))
 
-    # 掃描線（scanlines）
     scan = pygame.Surface((w, h), pygame.SRCALPHA)
     for y in range(0, h, 4):
         pygame.draw.line(scan, (0, 0, 0, 18), (0, y), (w, y))
@@ -245,9 +250,9 @@ def draw_boss_stage_tint(boss_kind: str):
     w, h = screen.get_size()
     overlay = pygame.Surface((w, h), pygame.SRCALPHA)
     if boss_kind == "mid":
-        overlay.fill((40, 90, 180, 30))   # 冷色壓迫
+        overlay.fill((40, 90, 180, 30))
     else:
-        overlay.fill((180, 60, 40, 32))   # 危險感
+        overlay.fill((180, 60, 40, 32))
     screen.blit(overlay, (0, 0))
 
 
@@ -479,9 +484,12 @@ class Boss(pygame.sprite.Sprite):
 
         self.vx = 3 if boss_kind == "mid" else 4
         self.last_shot = 0
-        self.shot_delay = MID_BOSS_SHOT_DELAY if boss_kind == "mid" else BIG_BOSS_SHOT_DELAY
 
-        # 每個門檻只掉一次
+        # 模式系統
+        self.attack_mode = "spray" if boss_kind == "mid" else "fan"
+        self.mode_until = pygame.time.get_ticks() + random.randint(BOSS_MODE_SWITCH_MIN_MS, BOSS_MODE_SWITCH_MAX_MS)
+        self.burst_left = 0
+
         self.drop_flags = {thr: False for thr in BOSS_DROP_THRESHOLDS}
 
     def update(self, *args):
@@ -489,9 +497,26 @@ class Boss(pygame.sprite.Sprite):
         if self.rect.left <= 10 or self.rect.right >= WIDTH - 10:
             self.vx *= -1
 
+        now = pygame.time.get_ticks()
+        if now >= self.mode_until:
+            if self.boss_kind == "mid":
+                self.attack_mode = random.choice(["spray", "burst", "snipe"])
+            else:
+                self.attack_mode = random.choice(["fan", "ring", "burst"])
+
+            if self.attack_mode == "burst":
+                self.burst_left = 10 if self.boss_kind == "mid" else 14
+
+            self.mode_until = now + random.randint(BOSS_MODE_SWITCH_MIN_MS, BOSS_MODE_SWITCH_MAX_MS)
+
+    def current_shot_delay(self) -> int:
+        if self.boss_kind == "mid":
+            return MID_MODE_DELAY[self.attack_mode]
+        return BIG_MODE_DELAY[self.attack_mode]
+
     def can_shoot(self):
         now = pygame.time.get_ticks()
-        return (now - self.last_shot) >= self.shot_delay
+        return (now - self.last_shot) >= self.current_shot_delay()
 
     def mark_shot(self):
         self.last_shot = pygame.time.get_ticks()
@@ -547,12 +572,10 @@ all_sprites.add(player)
 menu_particles = init_menu_particles(60)
 menu_ripples = []
 
-# state: MENU -> COUNTDOWN -> PLAY -> CLEAR -> WIN / GAMEOVER
-state = "MENU"
-
+state = "MENU"  # MENU -> COUNTDOWN -> PLAY -> CLEAR -> WIN / GAMEOVER
 score = 0
 level = 1
-mode = "LEVEL"  # LEVEL / BOSS
+mode = "LEVEL"
 level_start_ms = pygame.time.get_ticks()
 level_time_limit = LEVEL_TIME_LIMIT[level]
 
@@ -613,8 +636,14 @@ def maybe_drop_powerup(x: int, y: int, force: bool = False):
     if not force:
         if random.random() > POWERUP_DROP_CHANCE:
             return
-        kind = random.choice(POWERUP_TYPES)
+
+        # 前兩關：紫色 spread 機率下降一點點
+        if level in (1, 2):
+            kind = random.choices(["heal", "rapid", "spread"], weights=[40, 35, 25], k=1)[0]
+        else:
+            kind = random.choices(["heal", "rapid", "spread"], weights=[34, 33, 33], k=1)[0]
     else:
+        # Boss 固定掉落：偏向 heal 一點點
         kind = random.choices(["heal", "rapid", "spread"], weights=[45, 30, 25], k=1)[0]
 
     p = PowerUp(kind, x, y)
@@ -692,7 +721,7 @@ while running:
     keys = pygame.key.get_pressed()
 
     # -------------------------
-    # MENU：封面（更像遊戲）
+    # MENU
     # -------------------------
     if state == "MENU":
         draw_vertical_gradient(screen, (6, 8, 20), (14, 18, 38))
@@ -765,11 +794,10 @@ while running:
             new_game()
             state = "COUNTDOWN"
             countdown_start_ms = pygame.time.get_ticks()
-
         continue
 
     # -------------------------
-    # COUNTDOWN：倒數 3 秒後開始第 1 關
+    # COUNTDOWN
     # -------------------------
     if state == "COUNTDOWN":
         all_sprites.update(keys)
@@ -797,7 +825,7 @@ while running:
         continue
 
     # -------------------------
-    # PLAY：正式遊戲
+    # PLAY
     # -------------------------
     if state == "PLAY":
         if remaining_time_sec() <= 0:
@@ -839,17 +867,54 @@ while running:
                 message_until = pygame.time.get_ticks() + 1200
 
         elif mode == "BOSS":
+            # Boss 射擊（依模式）
             for boss in boss_group:
                 if boss.can_shoot():
                     boss.mark_shot()
                     x = boss.rect.centerx
                     y = boss.rect.bottom - 8
-                    vxs = (-2, 0, 2) if boss.boss_kind == "mid" else (-3, -1, 0, 1, 3)
-                    for vx in vxs:
-                        bb = BossBullet(x, y, vx=vx, vy=7)
-                        all_sprites.add(bb)
-                        boss_bullets.add(bb)
 
+                    if boss.boss_kind == "mid":
+                        if boss.attack_mode == "spray":
+                            for vx in (-2, 0, 2):
+                                bb = BossBullet(x, y, vx=vx, vy=7)
+                                all_sprites.add(bb); boss_bullets.add(bb)
+
+                        elif boss.attack_mode == "snipe":
+                            bb = BossBullet(x, y, vx=0, vy=10)
+                            all_sprites.add(bb); boss_bullets.add(bb)
+
+                        elif boss.attack_mode == "burst":
+                            if boss.burst_left > 0:
+                                boss.burst_left -= 1
+                                vx = random.choice([-1, 0, 1])
+                                bb = BossBullet(x, y, vx=vx, vy=8)
+                                all_sprites.add(bb); boss_bullets.add(bb)
+                            else:
+                                boss.attack_mode = "spray"
+
+                    else:
+                        if boss.attack_mode == "fan":
+                            for vx in (-3, -1, 0, 1, 3):
+                                bb = BossBullet(x, y, vx=vx, vy=7)
+                                all_sprites.add(bb); boss_bullets.add(bb)
+
+                        elif boss.attack_mode == "ring":
+                            vxs = (-5, -3, -1, 0, 1, 3, 5)
+                            for vx in vxs:
+                                bb = BossBullet(x, y, vx=vx, vy=random.choice([6, 7, 8]))
+                                all_sprites.add(bb); boss_bullets.add(bb)
+
+                        elif boss.attack_mode == "burst":
+                            if boss.burst_left > 0:
+                                boss.burst_left -= 1
+                                for vx in (-2, 0, 2):
+                                    bb = BossBullet(x, y, vx=vx, vy=8)
+                                    all_sprites.add(bb); boss_bullets.add(bb)
+                            else:
+                                boss.attack_mode = "fan"
+
+            # 子彈打 Boss
             if len(boss_group) > 0:
                 boss = next(iter(boss_group))
                 boss_hits = pygame.sprite.spritecollide(boss, bullets, True)
@@ -862,6 +927,7 @@ while running:
                         message_text = f"BOSS DEFEATED! (L{level})"
                         message_until = pygame.time.get_ticks() + 1400
 
+            # Boss 子彈打玩家
             bb_hits = pygame.sprite.spritecollide(player, boss_bullets, True)
             for _ in bb_hits:
                 player.hp -= (BOSS_BULLET_DAMAGE_MID if level == 3 else BOSS_BULLET_DAMAGE_BIG)
@@ -874,7 +940,7 @@ while running:
                 apply_powerup(p.kind)
 
     # -------------------------
-    # CLEAR：過關 -> 下一關 / WIN
+    # CLEAR
     # -------------------------
     if state == "CLEAR":
         if pygame.time.get_ticks() >= message_until:
@@ -887,7 +953,7 @@ while running:
                 message_until = pygame.time.get_ticks() + 2500
 
     # =====================================================
-    # DRAW：PLAY / CLEAR / WIN / GAMEOVER 共用
+    # DRAW
     # =====================================================
     if mode == "BOSS":
         draw_boss_background(menu_particles)
@@ -897,11 +963,9 @@ while running:
 
     all_sprites.draw(screen)
 
-    # Boss 關再加色調（更戰鬥感）
     if mode == "BOSS" and len(boss_group) > 0:
         draw_boss_stage_tint(next(iter(boss_group)).boss_kind)
 
-    # HUD（只留兩行）
     hud1 = font.render(f"Score: {score}  HP: {max(0, player.hp)}", True, WHITE)
     screen.blit(hud1, (10, 10))
 
@@ -910,17 +974,14 @@ while running:
         hud2 = small_font.render(f"LEVEL: {level}  Time: {time_left}s", True, (170, 175, 190))
         screen.blit(hud2, (10, 38))
 
-    # Boss 血條（只用圖）
     if state in ("PLAY", "CLEAR") and mode == "BOSS" and len(boss_group) > 0:
         draw_boss_hp_bar(next(iter(boss_group)))
 
-    # CLEAR/WIN 訊息
     now = pygame.time.get_ticks()
     if state in ("CLEAR", "WIN") and now < message_until:
         msg = big_font.render(message_text, True, YELLOW)
         screen.blit(msg, (WIDTH // 2 - msg.get_width() // 2, HEIGHT // 2 - 40))
 
-    # GAME OVER：回到封面
     if state == "GAMEOVER":
         msg = big_font.render("GAME OVER", True, RED)
         screen.blit(msg, (WIDTH // 2 - msg.get_width() // 2, HEIGHT // 2 - 40))
@@ -930,7 +991,6 @@ while running:
         if mouse_down and btn.collidepoint(mouse_pos):
             state = "MENU"
 
-    # WIN：回到封面
     if state == "WIN":
         msg = big_font.render("YOU WIN!", True, YELLOW)
         screen.blit(msg, (WIDTH // 2 - msg.get_width() // 2, HEIGHT // 2 - 40))
