@@ -4,14 +4,20 @@ import sys
 import os
 
 # =========================================================
-# 0) 字型：避免中文亂碼
+# 0) 基準路徑：一律用 main.py 所在資料夾當基準（解決 VSCode/cwd 找不到檔）
+# =========================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+# =========================================================
+# 1) 字型：避免中文亂碼（同樣用 BASE_DIR）
 # =========================================================
 def load_font(size: int) -> pygame.font.Font:
     local_candidates = [
-        os.path.join("assets", "NotoSansTC-Regular.otf"),
-        os.path.join("assets", "NotoSansTC-Regular.ttf"),
-        os.path.join("assets", "NotoSansCJKtc-Regular.otf"),
-        os.path.join("assets", "NotoSansCJKtc-Regular.ttf"),
+        os.path.join(BASE_DIR, "assets", "NotoSansTC-Regular.otf"),
+        os.path.join(BASE_DIR, "assets", "NotoSansTC-Regular.ttf"),
+        os.path.join(BASE_DIR, "assets", "NotoSansCJKtc-Regular.otf"),
+        os.path.join(BASE_DIR, "assets", "NotoSansCJKtc-Regular.ttf"),
     ]
     for p in local_candidates:
         if os.path.exists(p):
@@ -44,9 +50,19 @@ def load_font(size: int) -> pygame.font.Font:
 
 
 # =========================================================
-# 1) 初始化
+# 2) 初始化（音效：pre_init -> init，並保留容錯）
 # =========================================================
+pygame.mixer.pre_init(44100, -16, 2, 512)
 pygame.init()
+
+SOUND_ENABLED = True
+try:
+    pygame.mixer.init()
+    pygame.mixer.set_num_channels(32)  # 自動連射不會一直覆蓋同一個聲道
+except Exception as e:
+    SOUND_ENABLED = False
+    print("[AUDIO] mixer.init FAILED:", e)
+
 WIDTH, HEIGHT = 480, 600
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("天際防衛戰")
@@ -54,7 +70,6 @@ clock = pygame.time.Clock()
 
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
-GRAY = (180, 180, 180)
 YELLOW = (255, 255, 0)
 RED = (255, 60, 60)
 PURPLE = (170, 80, 255)
@@ -70,7 +85,67 @@ title_font = load_font(52)
 
 
 # =========================================================
-# 2) 參數：五關卡 / Boss / 道具 / Boss 模式
+# 3) 音效載入：強制用 BASE_DIR 絕對路徑 + 啟動時印出載入結果
+#    支援放置位置：
+#      - 專案根目錄：BASE_DIR/shoot.wav
+#      - assets/sfx/：BASE_DIR/assets/sfx/shoot.wav
+#      - assets/：BASE_DIR/assets/shoot.wav
+# =========================================================
+def _sfx_path(filename: str) -> str | None:
+    candidates = [
+        os.path.join(BASE_DIR, "assets", "sfx", filename),
+        os.path.join(BASE_DIR, "assets", filename),
+        os.path.join(BASE_DIR, filename),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
+
+def load_sfx(filename: str, volume: float = 0.6):
+    if not SOUND_ENABLED:
+        return None
+    p = _sfx_path(filename)
+    if not p:
+        return None
+    try:
+        s = pygame.mixer.Sound(p)
+        s.set_volume(volume)
+        return s
+    except Exception as e:
+        print(f"[AUDIO] LOAD FAIL {filename}: {e}")
+        return None
+
+def play_sfx(snd):
+    if snd is not None:
+        try:
+            snd.play()
+        except Exception:
+            pass
+
+SFX_SHOOT  = load_sfx("shoot.wav",    volume=0.35)
+SFX_HIT    = load_sfx("hit.wav",      volume=0.45)
+SFX_PICKUP = load_sfx("pickup.wav",   volume=0.55)
+SFX_BOSS   = load_sfx("boss.wav",     volume=0.55)
+SFX_OVER   = load_sfx("gameover.wav", volume=0.65)
+SFX_WIN    = load_sfx("win.wav",      volume=0.65)
+
+print("[AUDIO] SOUND_ENABLED =", SOUND_ENABLED)
+print("[AUDIO] mixer.get_init() =", pygame.mixer.get_init())
+print("[AUDIO] shoot =", "OK" if SFX_SHOOT else "None")
+print("[AUDIO] hit   =", "OK" if SFX_HIT else "None")
+print("[AUDIO] pickup=", "OK" if SFX_PICKUP else "None")
+print("[AUDIO] boss  =", "OK" if SFX_BOSS else "None")
+print("[AUDIO] over  =", "OK" if SFX_OVER else "None")
+print("[AUDIO] win   =", "OK" if SFX_WIN else "None")
+
+#（可選）啟動測試音：如果你有 boss.wav，程式啟動會先播一下用來確認「真的有聲」
+if SOUND_ENABLED and SFX_BOSS is not None:
+    SFX_BOSS.play()
+
+
+# =========================================================
+# 4) 參數：五關卡 / Boss / 道具 / Boss 模式
 # =========================================================
 LEVEL_SCORE_TARGETS = {1: 200, 2: 450, 4: 900}
 LEVEL_TIME_LIMIT = {1: 45, 2: 50, 3: 60, 4: 55, 5: 70}
@@ -82,9 +157,9 @@ ENEMY_SETTINGS = {
 }
 
 MID_BOSS_HP = 150
-BIG_BOSS_HP = 250
+BIG_BOSS_HP = 320
 BOSS_BULLET_DAMAGE_MID = 8
-BOSS_BULLET_DAMAGE_BIG = 8
+BOSS_BULLET_DAMAGE_BIG = 10
 
 POWERUP_DROP_CHANCE = 0.18
 RAPID_DURATION_MS = 6000
@@ -97,21 +172,12 @@ BOSS_DROP_THRESHOLDS = [0.85, 0.70, 0.55, 0.40, 0.25, 0.10]
 BOSS_MODE_SWITCH_MIN_MS = 2200
 BOSS_MODE_SWITCH_MAX_MS = 3800
 
-MID_MODE_DELAY = {
-    "spray": 950,   # 三向
-    "burst": 240,   # 短時間連射
-    "snipe": 520,   # 高速直線
-}
-
-BIG_MODE_DELAY = {
-    "fan": 650,     # 五向扇形
-    "ring": 900,    # 多向彈幕感
-    "burst": 260,   # 短時間密集
-}
+MID_MODE_DELAY = {"spray": 950, "burst": 240, "snipe": 520}
+BIG_MODE_DELAY = {"fan": 650, "ring": 900, "burst": 220}
 
 
 # =========================================================
-# 3) 背景與封面特效
+# 5) 背景與封面特效
 # =========================================================
 def draw_vertical_gradient(surface, top_color, bottom_color):
     w, h = surface.get_size()
@@ -156,18 +222,14 @@ def update_and_draw_particles(particles):
             p["x"] = random.randint(0, WIDTH)
             p["spd"] = random.uniform(0.2, 0.9)
             p["a"] = random.randint(80, 200)
-
         star = pygame.Surface((p["r"] * 2 + 2, p["r"] * 2 + 2), pygame.SRCALPHA)
         pygame.draw.circle(star, (255, 255, 255, p["a"]), (p["r"] + 1, p["r"] + 1), p["r"])
         screen.blit(star, (p["x"], p["y"]))
 
 def draw_shadow_rect(x, y, w, h, radius=16, shadow_offset=6, shadow_alpha=120):
     shadow = pygame.Surface((w + shadow_offset * 2, h + shadow_offset * 2), pygame.SRCALPHA)
-    pygame.draw.rect(
-        shadow, (0, 0, 0, shadow_alpha),
-        (shadow_offset, shadow_offset, w, h),
-        border_radius=radius
-    )
+    pygame.draw.rect(shadow, (0, 0, 0, shadow_alpha),
+                     (shadow_offset, shadow_offset, w, h), border_radius=radius)
     screen.blit(shadow, (x - shadow_offset, y - shadow_offset))
 
 def draw_button_fancy(rect, text, hover):
@@ -182,7 +244,8 @@ def draw_button_fancy(rect, text, hover):
     color = hover_color if hover else base_color
 
     glow = pygame.Surface((w + 20, h + 20), pygame.SRCALPHA)
-    pygame.draw.rect(glow, (80, 220, 160, 80 if hover else 40), (10, 10, w, h), border_radius=14)
+    pygame.draw.rect(glow, (80, 220, 160, 80 if hover else 40),
+                     (10, 10, w, h), border_radius=14)
     screen.blit(glow, (x - 10, y - 10))
 
     pygame.draw.rect(screen, color, (x, y, w, h), border_radius=14)
@@ -190,7 +253,6 @@ def draw_button_fancy(rect, text, hover):
 
     t = font.render(text, True, WHITE)
     screen.blit(t, (x + w // 2 - t.get_width() // 2, y + h // 2 - t.get_height() // 2))
-
     return pygame.Rect(x, y, w, h)
 
 def draw_click_ripple(ripples):
@@ -201,17 +263,13 @@ def draw_click_ripple(ripples):
             ripples.remove(r)
             continue
         surf = pygame.Surface((r["radius"] * 2 + 2, r["radius"] * 2 + 2), pygame.SRCALPHA)
-        pygame.draw.circle(
-            surf, (255, 255, 255, r["alpha"]),
-            (r["radius"] + 1, r["radius"] + 1),
-            r["radius"], width=2
-        )
+        pygame.draw.circle(surf, (255, 255, 255, r["alpha"]),
+                           (r["radius"] + 1, r["radius"] + 1), r["radius"], width=2)
         screen.blit(surf, (r["x"] - r["radius"], r["y"] - r["radius"]))
 
 def wrap_text(text: str, fnt: pygame.font.Font, max_width: int):
     chars = list(text)
-    lines = []
-    cur = ""
+    lines, cur = [], ""
     for ch in chars:
         test = cur + ch
         if fnt.size(test)[0] <= max_width:
@@ -232,13 +290,9 @@ def draw_boss_background(menu_particles):
     vignette = pygame.Surface((w, h), pygame.SRCALPHA)
     for i in range(18):
         alpha = int(10 + i * 6)
-        pygame.draw.rect(
-            vignette,
-            (0, 0, 0, alpha),
-            (i * 8, i * 10, w - i * 16, h - i * 20),
-            width=0,
-            border_radius=26
-        )
+        pygame.draw.rect(vignette, (0, 0, 0, alpha),
+                         (i * 8, i * 10, w - i * 16, h - i * 20),
+                         border_radius=26)
     screen.blit(vignette, (0, 0))
 
     scan = pygame.Surface((w, h), pygame.SRCALPHA)
@@ -249,15 +303,12 @@ def draw_boss_background(menu_particles):
 def draw_boss_stage_tint(boss_kind: str):
     w, h = screen.get_size()
     overlay = pygame.Surface((w, h), pygame.SRCALPHA)
-    if boss_kind == "mid":
-        overlay.fill((40, 90, 180, 30))
-    else:
-        overlay.fill((180, 60, 40, 32))
+    overlay.fill((40, 90, 180, 30) if boss_kind == "mid" else (180, 60, 40, 32))
     screen.blit(overlay, (0, 0))
 
 
 # =========================================================
-# 4) 造型：戰鬥機 / 尾焰 / 怪物 / Boss / 果實
+# 6) 造型：戰鬥機 / 尾焰 / 怪物 / Boss / 果實
 # =========================================================
 def make_fighter_surface(w=60, h=48):
     surf = pygame.Surface((w, h), pygame.SRCALPHA)
@@ -281,10 +332,8 @@ def draw_engine_flame(surf, w, h, strong=False):
     flame_len = random.randint(10, 16) if strong else random.randint(6, 12)
     flame_color = ORANGE if strong else (255, 210, 0)
     inner_color = WHITE
-
     outer = [(cx, base_y + flame_len), (cx - 6, base_y), (cx + 6, base_y)]
     pygame.draw.polygon(surf, flame_color, outer)
-
     inner = [(cx, base_y + max(4, flame_len - 4)), (cx - 3, base_y + 1), (cx + 3, base_y + 1)]
     pygame.draw.polygon(surf, inner_color, inner)
 
@@ -349,7 +398,7 @@ def make_fruit_surface(kind: str, size=22):
 
 
 # =========================================================
-# 5) Sprite：玩家/子彈/敵人/果實/Boss
+# 7) Sprite：玩家/子彈/敵人/果實/Boss
 # =========================================================
 class Player(pygame.sprite.Sprite):
     def __init__(self):
@@ -373,6 +422,9 @@ class Player(pygame.sprite.Sprite):
         self.rapid_until = 0
         self.spread_until = 0
 
+        # 控制射擊音效不要太密：每 4 發播一次
+        self.shot_count = 0
+
     def reset_for_new_game(self):
         self.rect.center = (WIDTH // 2, HEIGHT - 60)
         self.hp = self.hp_max
@@ -380,6 +432,7 @@ class Player(pygame.sprite.Sprite):
         self.shoot_delay = self.base_shoot_delay
         self.rapid_until = 0
         self.spread_until = 0
+        self.shot_count = 0
 
     def update(self, keys):
         if keys[pygame.K_LEFT] or keys[pygame.K_a]:
@@ -485,7 +538,6 @@ class Boss(pygame.sprite.Sprite):
         self.vx = 3 if boss_kind == "mid" else 4
         self.last_shot = 0
 
-        # 模式系統
         self.attack_mode = "spray" if boss_kind == "mid" else "fan"
         self.mode_until = pygame.time.get_ticks() + random.randint(BOSS_MODE_SWITCH_MIN_MS, BOSS_MODE_SWITCH_MAX_MS)
         self.burst_left = 0
@@ -510,9 +562,7 @@ class Boss(pygame.sprite.Sprite):
             self.mode_until = now + random.randint(BOSS_MODE_SWITCH_MIN_MS, BOSS_MODE_SWITCH_MAX_MS)
 
     def current_shot_delay(self) -> int:
-        if self.boss_kind == "mid":
-            return MID_MODE_DELAY[self.attack_mode]
-        return BIG_MODE_DELAY[self.attack_mode]
+        return MID_MODE_DELAY[self.attack_mode] if self.boss_kind == "mid" else BIG_MODE_DELAY[self.attack_mode]
 
     def can_shoot(self):
         now = pygame.time.get_ticks()
@@ -539,14 +589,12 @@ class BossBullet(pygame.sprite.Sprite):
 
 
 # =========================================================
-# 6) Boss 血條（只用圖）
+# 8) Boss 血條（只用圖）
 # =========================================================
 def draw_boss_hp_bar(boss: Boss):
     bar_w = WIDTH - 40
     bar_h = 10
-    x = 20
-    y = 66
-
+    x, y = 20, 66
     pygame.draw.rect(screen, (60, 60, 60), (x, y, bar_w, bar_h), border_radius=6)
     pygame.draw.rect(screen, (220, 220, 220), (x, y, bar_w, bar_h), 2, border_radius=6)
 
@@ -557,7 +605,7 @@ def draw_boss_hp_bar(boss: Boss):
 
 
 # =========================================================
-# 7) 群組 / 狀態 / 按鈕
+# 9) 群組 / 狀態 / 按鈕
 # =========================================================
 all_sprites = pygame.sprite.Group()
 enemies = pygame.sprite.Group()
@@ -590,7 +638,7 @@ back_button = pygame.Rect(WIDTH // 2 - 110, HEIGHT // 2 + 40, 220, 54)
 
 
 # =========================================================
-# 8) 遊戲流程函式
+# 10) 遊戲流程函式
 # =========================================================
 def clear_groups_for_new_level():
     for g in (enemies, bullets, powerups, boss_group, boss_bullets):
@@ -620,11 +668,13 @@ def start_level(lv: int):
         b = Boss("mid", MID_BOSS_HP)
         all_sprites.add(b)
         boss_group.add(b)
+        play_sfx(SFX_BOSS)
     elif level == 5:
         mode = "BOSS"
         b = Boss("big", BIG_BOSS_HP)
         all_sprites.add(b)
         boss_group.add(b)
+        play_sfx(SFX_BOSS)
     else:
         spawn_level_enemies(level)
 
@@ -636,7 +686,6 @@ def maybe_drop_powerup(x: int, y: int, force: bool = False):
     if not force:
         if random.random() > POWERUP_DROP_CHANCE:
             return
-
         # 前兩關：紫色 spread 機率下降一點點
         if level in (1, 2):
             kind = random.choices(["heal", "rapid", "spread"], weights=[40, 35, 25], k=1)[0]
@@ -664,6 +713,11 @@ def spawn_player_bullets():
         return
     player.mark_fired()
 
+    # 射擊音效：避免太密，改為每 4 發播一次（更像連射音效）
+    player.shot_count += 1
+    if player.shot_count % 4 == 0:
+        play_sfx(SFX_SHOOT)
+
     x, y = player.rect.centerx, player.rect.top
     if player.has_spread():
         for vx in (-3, 0, 3):
@@ -676,9 +730,7 @@ def spawn_player_bullets():
         bullets.add(b)
 
 def boss_check_and_drop(boss: Boss):
-    if boss.max_hp <= 0:
-        return
-    ratio = boss.hp / boss.max_hp
+    ratio = boss.hp / boss.max_hp if boss.max_hp > 0 else 0
     for thr in BOSS_DROP_THRESHOLDS:
         if ratio <= thr and (boss.drop_flags.get(thr) is False):
             boss.drop_flags[thr] = True
@@ -686,6 +738,8 @@ def boss_check_and_drop(boss: Boss):
 
 def set_gameover():
     global state
+    if state != "GAMEOVER":
+        play_sfx(SFX_OVER)
     player.hp = 0
     state = "GAMEOVER"
 
@@ -701,7 +755,7 @@ def new_game():
 
 
 # =========================================================
-# 9) 主迴圈
+# 11) 主迴圈
 # =========================================================
 running = True
 while running:
@@ -729,13 +783,8 @@ while running:
 
         title_text = "天際防衛戰"
         title_w = title_font.size(title_text)[0]
-        draw_glow_text(
-            title_text, title_font,
-            WIDTH // 2 - title_w // 2, 58,
-            main_color=(40, 240, 255),
-            glow_color=(0, 180, 255),
-            glow_layers=7
-        )
+        draw_glow_text(title_text, title_font, WIDTH // 2 - title_w // 2, 58,
+                       main_color=(40, 240, 255), glow_color=(0, 180, 255), glow_layers=7)
 
         demo = make_fighter_surface(86, 68)
         demo2 = demo.copy()
@@ -829,13 +878,16 @@ while running:
     # -------------------------
     if state == "PLAY":
         if remaining_time_sec() <= 0:
-            state = "GAMEOVER"
+            set_gameover()
 
         spawn_player_bullets()
         all_sprites.update(keys)
 
         if mode == "LEVEL":
             hit_map = pygame.sprite.groupcollide(enemies, bullets, True, True)
+            if hit_map:
+                play_sfx(SFX_HIT)
+
             for enemy in hit_map:
                 score += 10
                 if level in (1, 2, 4):
@@ -857,6 +909,8 @@ while running:
                 enemies.add(e)
 
             got = pygame.sprite.spritecollide(player, powerups, True)
+            if got:
+                play_sfx(SFX_PICKUP)
             for p in got:
                 apply_powerup(p.kind)
 
@@ -879,11 +933,9 @@ while running:
                             for vx in (-2, 0, 2):
                                 bb = BossBullet(x, y, vx=vx, vy=7)
                                 all_sprites.add(bb); boss_bullets.add(bb)
-
                         elif boss.attack_mode == "snipe":
                             bb = BossBullet(x, y, vx=0, vy=10)
                             all_sprites.add(bb); boss_bullets.add(bb)
-
                         elif boss.attack_mode == "burst":
                             if boss.burst_left > 0:
                                 boss.burst_left -= 1
@@ -898,13 +950,10 @@ while running:
                             for vx in (-3, -1, 0, 1, 3):
                                 bb = BossBullet(x, y, vx=vx, vy=7)
                                 all_sprites.add(bb); boss_bullets.add(bb)
-
                         elif boss.attack_mode == "ring":
-                            vxs = (-5, -3, -1, 0, 1, 3, 5)
-                            for vx in vxs:
+                            for vx in (-5, -3, -1, 0, 1, 3, 5):
                                 bb = BossBullet(x, y, vx=vx, vy=random.choice([6, 7, 8]))
                                 all_sprites.add(bb); boss_bullets.add(bb)
-
                         elif boss.attack_mode == "burst":
                             if boss.burst_left > 0:
                                 boss.burst_left -= 1
@@ -919,6 +968,7 @@ while running:
                 boss = next(iter(boss_group))
                 boss_hits = pygame.sprite.spritecollide(boss, bullets, True)
                 if boss_hits:
+                    play_sfx(SFX_HIT)
                     boss.hp -= 2 * len(boss_hits)
                     boss_check_and_drop(boss)
                     if boss.hp <= 0:
@@ -936,6 +986,8 @@ while running:
                     break
 
             got = pygame.sprite.spritecollide(player, powerups, True)
+            if got:
+                play_sfx(SFX_PICKUP)
             for p in got:
                 apply_powerup(p.kind)
 
@@ -948,6 +1000,7 @@ while running:
                 start_level(level + 1)
                 state = "PLAY"
             else:
+                play_sfx(SFX_WIN)
                 state = "WIN"
                 message_text = "YOU WIN!"
                 message_until = pygame.time.get_ticks() + 2500
@@ -985,7 +1038,6 @@ while running:
     if state == "GAMEOVER":
         msg = big_font.render("GAME OVER", True, RED)
         screen.blit(msg, (WIDTH // 2 - msg.get_width() // 2, HEIGHT // 2 - 40))
-
         hover = back_button.collidepoint(mouse_pos)
         btn = draw_button_fancy(back_button, "回到封面", hover)
         if mouse_down and btn.collidepoint(mouse_pos):
@@ -994,7 +1046,6 @@ while running:
     if state == "WIN":
         msg = big_font.render("YOU WIN!", True, YELLOW)
         screen.blit(msg, (WIDTH // 2 - msg.get_width() // 2, HEIGHT // 2 - 40))
-
         hover = back_button.collidepoint(mouse_pos)
         btn = draw_button_fancy(back_button, "回到封面", hover)
         if mouse_down and btn.collidepoint(mouse_pos):
